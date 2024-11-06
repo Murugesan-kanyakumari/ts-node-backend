@@ -1,18 +1,24 @@
-Step 1 : Naviage and install modules
-===========
+# ts-node-backend
+
+This project is a TypeScript backend setup using Node.js and MongoDB.
+
+### Setup Instructions
+
+#### Step 1: Navigate to the Project Directory and Install Modules
+```
 cd ts-node-backend
+npm install
+```
 
-npm i
-
-Step 2 : Create env.dev in project root
-===========
-copy and paste thes variables
-
+### Step 2: Create Environment Variables
+```
 NODE_ENV='development'
 MONGO_URI='mongodb://localhost:27017'
+```
 
-Note : Start Service Mongodb in your local machine before.
-
-Step 3 : Run the Server using below the command
-===========
+### Step 3: Run the Server
+```
 npm run dev
+```
+
+#### Note : Before run the project , start mongodb servie in local environment
