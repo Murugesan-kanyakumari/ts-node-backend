@@ -1,13 +1,21 @@
-name: Run KaneAI HyperExecute Tests
+name: Run Latest HyperExecute Tests (DEV Only)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ dev ]     # Runs only for dev branch
+  pull_request:
+    branches: [ dev ]
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: 'LambdaTest Project ID'
+        required: true
+        default: '01K9Q78JG0N13DTGM260ZGFJBD'  # You can replace manually
 
 jobs:
-  run-kaneai-tests:
+  run-latest-tests:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -18,144 +26,93 @@ jobs:
     - name: Get All Test Runs from Project
       id: get-tests
       env:
-        PROJECT_ID: '01K9Q78JG0N13DTGM260ZGFJBD'  # Your actual project ID
+        PROJECT_ID: ${{ github.event.inputs.project_id }}
+        AUTH: "dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw=="   # <---- direct paste (no secrets)
       run: |
         echo "🔍 Fetching test runs for project: $PROJECT_ID"
-        
-        # Try different API endpoints
-        echo "Trying API endpoint 1..."
-        response1=$(curl --silent --location \
-          "https://test-manager.lambdatest.com/api/v1/test-runs?projectId=$PROJECT_ID" \
+
+        response=$(curl --location \
+          "https://test-manager-api.lambdatest.com/api/atm/v1/test-runs?projectId=$PROJECT_ID" \
           --header "accept: application/json" \
-          --header "Authorization: Basic dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw==" || echo "API_ERROR")
-        
-        echo "Response 1: $response1"
-        
-        # If first fails, try alternative endpoint
-        if [[ "$response1" == *"404"* ]] || [[ "$response1" == "API_ERROR" ]]; then
-          echo "Trying API endpoint 2..."
-          response2=$(curl --silent --location \
-            "https://api.lambdatest.com/test-manager/v1/test-runs?projectId=$PROJECT_ID" \
-            --header "accept: application/json" \
-            --header "Authorization: Basic dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw==" || echo "API_ERROR")
-          
-          echo "Response 2: $response2"
-          response="$response2"
-        else
-          response="$response1"
-        fi
-        
-        # Check if we got a valid JSON response
-        if echo "$response" | jq . > /dev/null 2>&1; then
-          echo "✅ Valid JSON response received"
-          # Extract test run IDs using jq
-          test_ids=$(echo "$response" | jq -r '.data[].id' | tr '\n' ' ' 2>/dev/null || echo "")
-          
-          if [ -z "$test_ids" ]; then
-            # Try alternative JSON structure
-            test_ids=$(echo "$response" | jq -r '.[].id' | tr '\n' ' ' 2>/dev/null || echo "")
-          fi
-        else
-          echo "❌ Invalid API response: $response"
-          exit 1
-        fi
-        
+          --header "Authorization: Basic $AUTH")
+
+        echo "API Response: $response"
+
+        test_ids=$(echo "$response" | jq -r '.data[].id' | tr '\n' ' ')
+
         if [ -z "$test_ids" ] || [ "$test_ids" = "null" ]; then
-          echo "❌ No test runs found in project or invalid response format"
-          echo "Full response: $response"
+          echo "❌ No test runs found in project"
           exit 1
         fi
-        
+
         echo "📋 Found test run IDs: $test_ids"
         echo "test_ids=$test_ids" >> $GITHUB_OUTPUT
 
-    - name: Run All KaneAI Tests Sequentially
+    - name: Run All Tests Sequentially
       env:
         TEST_IDS: ${{ steps.get-tests.outputs.test_ids }}
+        AUTH: "PASTE_YOUR_AUTH_STRING_HERE"   # <---- direct paste again
       run: |
-        echo "🚀 Starting sequential execution of all KaneAI HyperExecute tests..."
-        
-        # Convert space-separated string to array
+        echo "🚀 Starting sequential execution of all tests..."
+
         IFS=' ' read -ra TEST_ID_ARRAY <<< "$TEST_IDS"
-        
+
         total_tests=${#TEST_ID_ARRAY[@]}
         current_test=1
-        
-        echo "🎯 Total KaneAI tests to run: $total_tests"
-        
+
+        echo "🎯 Total tests to run: $total_tests"
+
         for test_id in "${TEST_ID_ARRAY[@]}"; do
           if [ -n "$test_id" ] && [ "$test_id" != "null" ]; then
             echo "========================================="
-            echo "🔸 KaneAI Test $current_test of $total_tests: $test_id"
+            echo "🔸 Test $current_test of $total_tests: $test_id"
             echo "========================================="
-            
-            # Trigger HyperExecute test
-            echo "⏳ Triggering HyperExecute..."
-            trigger_response=$(curl --silent --location \
+
+            trigger_response=$(curl --location \
               'https://test-manager-api.lambdatest.com/api/atm/v1/hyperexecute' \
               --header 'accept: application/json' \
               --header 'Content-Type: application/json' \
-              --header "Authorization: Basic dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw==" \
+              --header "Authorization: Basic $AUTH" \
               --data "{
                 \"test_run_id\": \"$test_id\",
                 \"concurrency\": 1
               }")
-            
+
             echo "Trigger Response: $trigger_response"
-            
-            # Check if trigger was successful
-            if [[ "$trigger_response" == *"404"* ]] || [[ "$trigger_response" == *"error"* ]]; then
-              echo "❌ Failed to trigger test (API error): $test_id"
-              current_test=$((current_test + 1))
-              continue
-            fi
-            
-            # Extract job ID from response
-            job_id=$(echo "$trigger_response" | jq -r '.job_id' 2>/dev/null || echo "")
-            
+
+            job_id=$(echo "$trigger_response" | jq -r '.job_id')
+
             if [ "$job_id" = "null" ] || [ -z "$job_id" ]; then
-              echo "❌ Failed to extract job_id for test: $test_id"
+              echo "❌ Failed to trigger test: $test_id"
               current_test=$((current_test + 1))
               continue
             fi
-            
+
             echo "📊 HyperExecute Job ID: $job_id"
-            
-            # Wait for test completion with polling
-            echo "⏳ Waiting for test completion..."
-            max_attempts=60  # 30 minutes maximum (60 * 30 seconds)
+            echo "⏳ Waiting for job completion..."
+
+            max_attempts=60
             attempt=1
             test_completed=false
-            
+
             while [ $attempt -le $max_attempts ]; do
-              status_response=$(curl --silent --location \
+              status_response=$(curl --location \
                 "https://api.hyperexecute.cloud/v2.0/job/$job_id" \
                 --header "accept: application/json" \
-                --header "Authorization: Basic dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw==")
-              
-              # Check if status API call was successful
-              if [[ "$status_response" == *"404"* ]] || [[ "$status_response" == *"error"* ]]; then
-                echo "⚠️ Error checking status (Attempt $attempt)"
-                sleep 30
-                attempt=$((attempt + 1))
-                continue
-              fi
-              
-              status=$(echo "$status_response" | jq -r '.data.status' 2>/dev/null || echo "unknown")
-              
+                --header "Authorization: Basic $AUTH")
+
+              status=$(echo "$status_response" | jq -r '.data.status')
+
               case $status in
                 "completed")
-                  echo "✅ KaneAI Test $current_test completed successfully!"
+                  echo "✅ Test $current_test completed successfully!"
                   test_completed=true
                   break
                   ;;
                 "failed"|"error"|"cancelled")
-                  echo "❌ KaneAI Test $current_test failed with status: $status"
+                  echo "❌ Test $current_test failed with status: $status"
                   test_completed=true
                   break
-                  ;;
-                "unknown")
-                  echo "⚠️ Unknown status response (Attempt $attempt)"
                   ;;
                 *)
                   echo "⏱️ Status: $status (Attempt $attempt of $max_attempts)"
@@ -164,28 +121,27 @@ jobs:
                   ;;
               esac
             done
-            
+
             if [ "$test_completed" = false ]; then
-              echo "🕐 KaneAI Test $current_test timed out after 30 minutes"
+              echo "🕐 Timeout after 30 minutes"
             fi
-            
+
             echo "----------------------------------------"
             current_test=$((current_test + 1))
-            sleep 5  # Small delay between tests
+            sleep 5
           fi
         done
-        
-        echo "🎉 All KaneAI tests execution completed!"
-        echo "📊 Total KaneAI tests processed: $((current_test - 1))"
 
-    - name: KaneAI Tests Summary
+        echo "🎉 All tests execution completed!"
+        echo "📊 Total tests processed: $((current_test - 1))"
+
+    - name: Final Summary
       if: always()
       run: |
         echo "========================================="
-        echo "📊 KANEAI HYPEREXECUTE SUMMARY"
+        echo "📊 LAMBDATEST HYPEREXECUTE SUMMARY"
         echo "========================================="
-        echo "🏢 Project ID: 01K9Q78JG0N13DTGM260ZGFJBD"
+        echo "🏢 Project ID: ${{ github.event.inputs.project_id }}"
         echo "🕒 Execution time: $(date)"
-        echo "✅ KaneAI test execution completed"
-        echo "📋 Check LambdaTest dashboard for detailed results"
+        echo "💡 Check LambdaTest dashboard for results"
         echo "========================================="
