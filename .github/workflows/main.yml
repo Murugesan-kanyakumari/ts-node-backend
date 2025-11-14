@@ -18,23 +18,51 @@ jobs:
     - name: Get All Test Runs from Project
       id: get-tests
       env:
-        PROJECT_ID: '01K9Q78JG0N13DTGM260ZGFJBD'  # Your LambdaTest project ID
+        PROJECT_ID: '01K9Q78JG0N13DTGM260ZGFJBD'  # Your actual project ID
       run: |
         echo "🔍 Fetching test runs for project: $PROJECT_ID"
         
-        # Get all test runs from the project
-        response=$(curl --location \
-          "https://test-manager-api.lambdatest.com/api/atm/v1/test-runs?projectId=$PROJECT_ID" \
+        # Try different API endpoints
+        echo "Trying API endpoint 1..."
+        response1=$(curl --silent --location \
+          "https://test-manager.lambdatest.com/api/v1/test-runs?projectId=$PROJECT_ID" \
           --header "accept: application/json" \
-          --header "Authorization: Basic dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw==")
+          --header "Authorization: Basic dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw==" || echo "API_ERROR")
         
-        echo "API Response: $response"
+        echo "Response 1: $response1"
         
-        # Extract test run IDs using jq
-        test_ids=$(echo "$response" | jq -r '.data[].id' | tr '\n' ' ')
+        # If first fails, try alternative endpoint
+        if [[ "$response1" == *"404"* ]] || [[ "$response1" == "API_ERROR" ]]; then
+          echo "Trying API endpoint 2..."
+          response2=$(curl --silent --location \
+            "https://api.lambdatest.com/test-manager/v1/test-runs?projectId=$PROJECT_ID" \
+            --header "accept: application/json" \
+            --header "Authorization: Basic dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw==" || echo "API_ERROR")
+          
+          echo "Response 2: $response2"
+          response="$response2"
+        else
+          response="$response1"
+        fi
+        
+        # Check if we got a valid JSON response
+        if echo "$response" | jq . > /dev/null 2>&1; then
+          echo "✅ Valid JSON response received"
+          # Extract test run IDs using jq
+          test_ids=$(echo "$response" | jq -r '.data[].id' | tr '\n' ' ' 2>/dev/null || echo "")
+          
+          if [ -z "$test_ids" ]; then
+            # Try alternative JSON structure
+            test_ids=$(echo "$response" | jq -r '.[].id' | tr '\n' ' ' 2>/dev/null || echo "")
+          fi
+        else
+          echo "❌ Invalid API response: $response"
+          exit 1
+        fi
         
         if [ -z "$test_ids" ] || [ "$test_ids" = "null" ]; then
-          echo "❌ No test runs found in project"
+          echo "❌ No test runs found in project or invalid response format"
+          echo "Full response: $response"
           exit 1
         fi
         
@@ -63,7 +91,7 @@ jobs:
             
             # Trigger HyperExecute test
             echo "⏳ Triggering HyperExecute..."
-            trigger_response=$(curl --location \
+            trigger_response=$(curl --silent --location \
               'https://test-manager-api.lambdatest.com/api/atm/v1/hyperexecute' \
               --header 'accept: application/json' \
               --header 'Content-Type: application/json' \
@@ -75,11 +103,18 @@ jobs:
             
             echo "Trigger Response: $trigger_response"
             
+            # Check if trigger was successful
+            if [[ "$trigger_response" == *"404"* ]] || [[ "$trigger_response" == *"error"* ]]; then
+              echo "❌ Failed to trigger test (API error): $test_id"
+              current_test=$((current_test + 1))
+              continue
+            fi
+            
             # Extract job ID from response
-            job_id=$(echo "$trigger_response" | jq -r '.job_id')
+            job_id=$(echo "$trigger_response" | jq -r '.job_id' 2>/dev/null || echo "")
             
             if [ "$job_id" = "null" ] || [ -z "$job_id" ]; then
-              echo "❌ Failed to trigger test: $test_id"
+              echo "❌ Failed to extract job_id for test: $test_id"
               current_test=$((current_test + 1))
               continue
             fi
@@ -93,12 +128,20 @@ jobs:
             test_completed=false
             
             while [ $attempt -le $max_attempts ]; do
-              status_response=$(curl --location \
+              status_response=$(curl --silent --location \
                 "https://api.hyperexecute.cloud/v2.0/job/$job_id" \
                 --header "accept: application/json" \
                 --header "Authorization: Basic dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw==")
               
-              status=$(echo "$status_response" | jq -r '.data.status')
+              # Check if status API call was successful
+              if [[ "$status_response" == *"404"* ]] || [[ "$status_response" == *"error"* ]]; then
+                echo "⚠️ Error checking status (Attempt $attempt)"
+                sleep 30
+                attempt=$((attempt + 1))
+                continue
+              fi
+              
+              status=$(echo "$status_response" | jq -r '.data.status' 2>/dev/null || echo "unknown")
               
               case $status in
                 "completed")
@@ -110,6 +153,9 @@ jobs:
                   echo "❌ KaneAI Test $current_test failed with status: $status"
                   test_completed=true
                   break
+                  ;;
+                "unknown")
+                  echo "⚠️ Unknown status response (Attempt $attempt)"
                   ;;
                 *)
                   echo "⏱️ Status: $status (Attempt $attempt of $max_attempts)"
@@ -140,6 +186,6 @@ jobs:
         echo "========================================="
         echo "🏢 Project ID: 01K9Q78JG0N13DTGM260ZGFJBD"
         echo "🕒 Execution time: $(date)"
-        echo "✅ All KaneAI tests have been executed"
+        echo "✅ KaneAI test execution completed"
         echo "📋 Check LambdaTest dashboard for detailed results"
         echo "========================================="
