@@ -1,20 +1,18 @@
-name: Run Latest HyperExecute Tests (DEV Only)
+name: Run Latest HyperExecute Tests by Project ID
 
 on:
   push:
-    branches: [ main ]     # Runs only for dev branch
+    branches: [ main ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
-    inputs:
-      project_id:
-        description: 'LambdaTest Project ID'
-        required: true
-        default: '01K9Q78JG0N13DTGM260ZGFJBD'  # You can replace manually
 
 jobs:
   run-latest-tests:
     runs-on: ubuntu-latest
+    env:
+      PROJECT_ID: "01K9Q78JG0N13DTGM260ZGFJBD"     # 🔥 Your project ID
+      AUTH: "Basic dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw=="   # 🔥 Your Base64-auth string
 
     steps:
     - name: Checkout code
@@ -25,16 +23,13 @@ jobs:
 
     - name: Get All Test Runs from Project
       id: get-tests
-      env:
-        PROJECT_ID: ${{ github.event.inputs.project_id }}
-        AUTH: "dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw=="   # <---- direct paste (no secrets)
       run: |
         echo "🔍 Fetching test runs for project: $PROJECT_ID"
 
         response=$(curl --location \
-          "https://test-manager-api.lambdatest.com/api/atm/v1/test-runs?projectId=$PROJECT_ID" \
+          "https://test-manager-api.lambdatest.com/api/atm/v1/test-run?projectId=$PROJECT_ID" \
           --header "accept: application/json" \
-          --header "Authorization: Basic $AUTH")
+          --header "Authorization: $AUTH")
 
         echo "API Response: $response"
 
@@ -51,7 +46,6 @@ jobs:
     - name: Run All Tests Sequentially
       env:
         TEST_IDS: ${{ steps.get-tests.outputs.test_ids }}
-        AUTH: "PASTE_YOUR_AUTH_STRING_HERE"   # <---- direct paste again
       run: |
         echo "🚀 Starting sequential execution of all tests..."
 
@@ -68,11 +62,12 @@ jobs:
             echo "🔸 Test $current_test of $total_tests: $test_id"
             echo "========================================="
 
+            echo "⏳ Triggering HyperExecute..."
             trigger_response=$(curl --location \
               'https://test-manager-api.lambdatest.com/api/atm/v1/hyperexecute' \
               --header 'accept: application/json' \
               --header 'Content-Type: application/json' \
-              --header "Authorization: Basic $AUTH" \
+              --header "Authorization: $AUTH" \
               --data "{
                 \"test_run_id\": \"$test_id\",
                 \"concurrency\": 1
@@ -89,8 +84,8 @@ jobs:
             fi
 
             echo "📊 HyperExecute Job ID: $job_id"
-            echo "⏳ Waiting for job completion..."
 
+            echo "⏳ Waiting for test completion..."
             max_attempts=60
             attempt=1
             test_completed=false
@@ -99,18 +94,18 @@ jobs:
               status_response=$(curl --location \
                 "https://api.hyperexecute.cloud/v2.0/job/$job_id" \
                 --header "accept: application/json" \
-                --header "Authorization: Basic $AUTH")
+                --header "Authorization: $AUTH")
 
               status=$(echo "$status_response" | jq -r '.data.status')
 
               case $status in
                 "completed")
-                  echo "✅ Test $current_test completed successfully!"
+                  echo "✅ Test $current_test completed!"
                   test_completed=true
                   break
                   ;;
                 "failed"|"error"|"cancelled")
-                  echo "❌ Test $current_test failed with status: $status"
+                  echo "❌ Test failed: $status"
                   test_completed=true
                   break
                   ;;
@@ -123,25 +118,24 @@ jobs:
             done
 
             if [ "$test_completed" = false ]; then
-              echo "🕐 Timeout after 30 minutes"
+              echo "🕐 Test $current_test timed out after 30 minutes"
             fi
 
-            echo "----------------------------------------"
             current_test=$((current_test + 1))
             sleep 5
           fi
         done
 
-        echo "🎉 All tests execution completed!"
-        echo "📊 Total tests processed: $((current_test - 1))"
+        echo "🎉 All tests executed!"
 
     - name: Final Summary
       if: always()
       run: |
         echo "========================================="
-        echo "📊 LAMBDATEST HYPEREXECUTE SUMMARY"
+        echo "📊 LambdaTest HyperExecute Summary"
         echo "========================================="
-        echo "🏢 Project ID: ${{ github.event.inputs.project_id }}"
-        echo "🕒 Execution time: $(date)"
-        echo "💡 Check LambdaTest dashboard for results"
+        echo "🏢 Project ID: $PROJECT_ID"
+        echo "🕒 Finished at: $(date)"
+        echo "🚀 Tests executed sequentially"
+        echo "📌 Check LambdaTest dashboard for details"
         echo "========================================="
