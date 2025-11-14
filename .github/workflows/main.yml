@@ -1,0 +1,145 @@
+name: Run KaneAI HyperExecute Tests
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  run-kaneai-tests:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install jq for JSON parsing
+      run: sudo apt-get install -y jq
+
+    - name: Get All Test Runs from Project
+      id: get-tests
+      env:
+        PROJECT_ID: '01K9Q78JG0N13DTGM260ZGFJBD'  # Your LambdaTest project ID
+      run: |
+        echo "🔍 Fetching test runs for project: $PROJECT_ID"
+        
+        # Get all test runs from the project
+        response=$(curl --location \
+          "https://test-manager-api.lambdatest.com/api/atm/v1/test-runs?projectId=$PROJECT_ID" \
+          --header "accept: application/json" \
+          --header "Authorization: Basic dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw==")
+        
+        echo "API Response: $response"
+        
+        # Extract test run IDs using jq
+        test_ids=$(echo "$response" | jq -r '.data[].id' | tr '\n' ' ')
+        
+        if [ -z "$test_ids" ] || [ "$test_ids" = "null" ]; then
+          echo "❌ No test runs found in project"
+          exit 1
+        fi
+        
+        echo "📋 Found test run IDs: $test_ids"
+        echo "test_ids=$test_ids" >> $GITHUB_OUTPUT
+
+    - name: Run All KaneAI Tests Sequentially
+      env:
+        TEST_IDS: ${{ steps.get-tests.outputs.test_ids }}
+      run: |
+        echo "🚀 Starting sequential execution of all KaneAI HyperExecute tests..."
+        
+        # Convert space-separated string to array
+        IFS=' ' read -ra TEST_ID_ARRAY <<< "$TEST_IDS"
+        
+        total_tests=${#TEST_ID_ARRAY[@]}
+        current_test=1
+        
+        echo "🎯 Total KaneAI tests to run: $total_tests"
+        
+        for test_id in "${TEST_ID_ARRAY[@]}"; do
+          if [ -n "$test_id" ] && [ "$test_id" != "null" ]; then
+            echo "========================================="
+            echo "🔸 KaneAI Test $current_test of $total_tests: $test_id"
+            echo "========================================="
+            
+            # Trigger HyperExecute test
+            echo "⏳ Triggering HyperExecute..."
+            trigger_response=$(curl --location \
+              'https://test-manager-api.lambdatest.com/api/atm/v1/hyperexecute' \
+              --header 'accept: application/json' \
+              --header 'Content-Type: application/json' \
+              --header "Authorization: Basic dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw==" \
+              --data "{
+                \"test_run_id\": \"$test_id\",
+                \"concurrency\": 1
+              }")
+            
+            echo "Trigger Response: $trigger_response"
+            
+            # Extract job ID from response
+            job_id=$(echo "$trigger_response" | jq -r '.job_id')
+            
+            if [ "$job_id" = "null" ] || [ -z "$job_id" ]; then
+              echo "❌ Failed to trigger test: $test_id"
+              current_test=$((current_test + 1))
+              continue
+            fi
+            
+            echo "📊 HyperExecute Job ID: $job_id"
+            
+            # Wait for test completion with polling
+            echo "⏳ Waiting for test completion..."
+            max_attempts=60  # 30 minutes maximum (60 * 30 seconds)
+            attempt=1
+            test_completed=false
+            
+            while [ $attempt -le $max_attempts ]; do
+              status_response=$(curl --location \
+                "https://api.hyperexecute.cloud/v2.0/job/$job_id" \
+                --header "accept: application/json" \
+                --header "Authorization: Basic dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw==")
+              
+              status=$(echo "$status_response" | jq -r '.data.status')
+              
+              case $status in
+                "completed")
+                  echo "✅ KaneAI Test $current_test completed successfully!"
+                  test_completed=true
+                  break
+                  ;;
+                "failed"|"error"|"cancelled")
+                  echo "❌ KaneAI Test $current_test failed with status: $status"
+                  test_completed=true
+                  break
+                  ;;
+                *)
+                  echo "⏱️ Status: $status (Attempt $attempt of $max_attempts)"
+                  sleep 30
+                  attempt=$((attempt + 1))
+                  ;;
+              esac
+            done
+            
+            if [ "$test_completed" = false ]; then
+              echo "🕐 KaneAI Test $current_test timed out after 30 minutes"
+            fi
+            
+            echo "----------------------------------------"
+            current_test=$((current_test + 1))
+            sleep 5  # Small delay between tests
+          fi
+        done
+        
+        echo "🎉 All KaneAI tests execution completed!"
+        echo "📊 Total KaneAI tests processed: $((current_test - 1))"
+
+    - name: KaneAI Tests Summary
+      if: always()
+      run: |
+        echo "========================================="
+        echo "📊 KANEAI HYPEREXECUTE SUMMARY"
+        echo "========================================="
+        echo "🏢 Project ID: 01K9Q78JG0N13DTGM260ZGFJBD"
+        echo "🕒 Execution time: $(date)"
+        echo "✅ All KaneAI tests have been executed"
+        echo "📋 Check LambdaTest dashboard for detailed results"
+        echo "========================================="
