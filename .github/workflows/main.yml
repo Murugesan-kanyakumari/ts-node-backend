@@ -1,100 +1,110 @@
-name: Run All HyperExecute Tests
+name: KaneAI - Auto Trigger Test Runs
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:
+    branches: [ "main" ]
 
 jobs:
-  run-tests:
+  run-kaneai:
     runs-on: ubuntu-latest
 
     env:
-      PROJECT_ID: "01K9Q78JG0N13DTGM260ZGFJBD"     # 🔥 Your project ID here
-      AUTH: "Basic dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw=="        # 🔥 Your Base64 auth here
+      PROJECT_ID: "01K9Q78JG0N13DTGM260ZGFJBD"
+      AUTH: "dGVzdGVyc3BvZGlvdHJhY2tlcjp4NXhiaHA3MHZFWGhJOWZyUHBsVElkZldIemtPZ01heklLUHg3ZEN4OGdKMU00eHVGcw=="
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Get Test Plans
+        id: get-plans
+        run: |
+          echo "Fetching test plans for project: $PROJECT_ID"
 
-    - name: Install jq
-      run: sudo apt-get install -y jq
-
-    - name: Fetch all test runs for the project
-      id: fetch
-      run: |
-        echo "Fetching test runs for project: $PROJECT_ID"
-
-        response=$(curl --location \
-          "https://test-manager-api.lambdatest.com/api/atm/v1/test-run?project_id=$PROJECT_ID" \
-          --header "accept: application/json" \
-          --header "Authorization: $AUTH")
-
-        echo "API Response: $response"
-
-        test_ids=$(echo "$response" | jq -r '.data[].id' | tr '\n' ' ')
-        
-        if [ -z "$test_ids" ]; then
-          echo "❌ No test runs found"
-          exit 1
-        fi
-
-        echo "Found test runs: $test_ids"
-        echo "test_ids=$test_ids" >> $GITHUB_OUTPUT
-
-    - name: Run all HyperExecute tests sequentially
-      env:
-        TEST_IDS: ${{ steps.fetch.outputs.test_ids }}
-      run: |
-        IFS=' ' read -ra IDS <<< "$TEST_IDS"
-        echo "Running ${#IDS[@]} tests..."
-
-        for id in "${IDS[@]}"; do
-          echo "----------------------------------------"
-          echo "Triggering test run: $id"
-          
-          trigger=$(curl --location \
-            'https://test-manager-api.lambdatest.com/api/atm/v1/hyperexecute' \
-            --header 'accept: application/json' \
-            --header 'Content-Type: application/json' \
-            --header "Authorization: $AUTH" \
-            --data "{
-              \"test_run_id\": \"$id\",
-              \"concurrency\": 1
-            }")
-
-          echo "Trigger response: $trigger"
-
-          job_id=$(echo "$trigger" | jq -r '.job_id')
-
-          if [ -z "$job_id" ] || [ "$job_id" = "null" ]; then
-            echo "❌ Failed to trigger test: $id"
-            continue
-          fi
-
-          echo "Waiting for HyperExecute job to finish: $job_id"
-          sleep 60  # wait before checking status
-
-          status_res=$(curl --location \
-            "https://api.hyperexecute.cloud/v2.0/job/$job_id" \
+          plans=$(curl -s --location \
+            "https://test-manager-api.lambdatest.com/api/atm/v1/projects/$PROJECT_ID/test-plans" \
             --header "accept: application/json" \
-            --header "Authorization: $AUTH")
+            --header "Authorization: Basic $AUTH")
 
-          echo "Status response: $status_res"
+          echo "API Response: $plans"
 
-          status=$(echo "$status_res" | jq -r '.data.status')
+          plan_id=$(echo "$plans" | jq -r '.data[0].id')
 
-          echo "Test status: $status"
-
-          if [[ "$status" != "completed" ]]; then
-            echo "❌ Test FAILED or INCOMPLETE"
+          if [[ "$plan_id" == "null" ]]; then
+            echo "❌ No test plans found"
             exit 1
           fi
 
-          echo "✅ Test completed successfully!"
-          echo "----------------------------------------"
-        done
+          echo "PLAN_ID=$plan_id" >> $GITHUB_ENV
+          echo "Found Plan: $plan_id"
 
-        echo "🎉 All tests completed successfully!"
+
+      - name: Get Test Runs inside that Plan
+        id: get-runs
+        run: |
+          echo "Fetching test runs for plan: $PLAN_ID"
+
+          runs=$(curl -s --location \
+            "https://test-manager-api.lambdatest.com/api/atm/v1/test-plans/$PLAN_ID/test-runs" \
+            --header "accept: application/json" \
+            --header "Authorization: Basic $AUTH")
+
+          echo "API Response: $runs"
+
+          run_id=$(echo "$runs" | jq -r '.data[0].id')
+
+          if [[ "$run_id" == "null" ]]; then
+            echo "❌ No test runs found"
+            exit 1
+          fi
+
+          echo "RUN_ID=$run_id" >> $GITHUB_ENV
+          echo "Found Run: $run_id"
+
+
+      - name: Trigger HyperExecute for this Run
+        id: trigger
+        run: |
+          echo "Triggering HyperExecute run: $RUN_ID"
+
+          resp=$(curl -s --location "https://test-manager-api.lambdatest.com/api/atm/v1/hyperexecute" \
+            --header "accept: application/json" \
+            --header "Content-Type: application/json" \
+            --header "Authorization: Basic $AUTH" \
+            --data "{
+              \"test_run_id\": \"$RUN_ID\",
+              \"concurrency\": 1
+            }")
+
+          echo "HE Response: $resp"
+
+          job_id=$(echo "$resp" | jq -r '.job_id')
+
+          if [[ "$job_id" == "null" ]]; then
+            echo "❌ Failed to trigger job"
+            exit 1
+          fi
+
+          echo "JOB_ID=$job_id" >> $GITHUB_ENV
+          echo "Triggered Job ID: $job_id"
+
+
+      - name: Wait and Check Job Status
+        run: |
+          echo "Waiting for job to complete..."
+          sleep 180
+
+          status=$(curl -s \
+            "https://api.hyperexecute.cloud/v2.0/job/$JOB_ID" \
+            --header "accept: application/json" \
+            --header "Authorization: Basic $AUTH")
+
+          echo "Job Response: $status"
+
+          result=$(echo "$status" | jq -r '.data.status')
+
+          echo "Job Status: $result"
+
+          if [[ "$result" != "completed" ]]; then
+            echo "❌ Tests failed"
+            exit 1
+          fi
+
+          echo "✅ Tests PASSED!"
